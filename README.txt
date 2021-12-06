@@ -1,5 +1,5 @@
 Linux Device Drivers 3 (Book):
-	https://bootlin.com/doc/books/ldd3.pdf
+https://bootlin.com/doc/books/ldd3.pdf
 
 Updated LDD3 code for newer kernel versions:
-	https://github.com/martinezjavier/ldd3
+https://github.com/martinezjavier/ldd3
