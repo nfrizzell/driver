@@ -86,7 +86,7 @@ ssize_t scull_read(struct file * filp, char __user * buf, size_t count, loff_t *
 	if (node_ptr == NULL || !node_ptr->quanta || !node_ptr->quanta[quantum_idx])
 		goto out;
 	
-	// Read amount specified by count or up to end of quantum, whichever is smaller
+	/* Read amount specified by the smaller of either count or quantum_size */
 	if (count > quantum_size - quantum_idx)
 		count = quantum_size - quantum_idx;
 
@@ -103,8 +103,55 @@ out:
 	return retval;
 }
 
-ssize_t scull_write(struct file * filp, const char __user * buf, size_t count, loff_t * ppos)
+ssize_t scull_write(struct file * filp, const char __user * buf, size_t count, loff_t * f_pos)
 {
+	struct scull_dev * dev = filp->private_data;
+	struct scull_qset * node_ptr;
+	int quantum_size = dev->quantum_size, qset_size = dev->qset_size;
+	int node_size = quantum_size * qset_size;
+	int node_idx, read_size, qset_idx, quantum_idx;
+	ssize_t retval = -ENOMEM;
+
+	if (mutex_lock_interruptible(&dev->lock))
+		return -ERESTARTSYS;
+
+	node_idx = (long) *f_pos / node_size;
+	read_size = (long) *f_pos % node_size; // Remaining bytes
+	qset_idx = read_size / quantum_size;
+	quantum_idx = read_size % quantum_size;
+
+	node_ptr = scull_follow(dev, node_idx);
+	if (node_ptr == NULL)
+		goto out;
+	if (!node_ptr->quanta) {
+		node_ptr->quanta = kmalloc(qset_size * sizeof(char*), GFP_KERNEL);
+		if (!node_ptr->quanta)
+			goto out;
+		memset(node_ptr->quanta, 0, qset_size * sizeof(char*));
+	}
+	if (!node_ptr->quanta[quantum_idx]) {
+		node_ptr->quanta[quantum_idx] = kmalloc(quantum_size, GFP_KERNEL);
+		if (!node_ptr->quanta[quantum_idx])
+			goto out;
+	}
+
+	/* Write amount specified by the smaller of either count or quantum_size */
+	if (count > quantum_size - quantum_idx)
+		count = quantum_size - quantum_idx;
+
+	if (copy_from_user(node_ptr->quanta[quantum_idx] + qset_idx, buf, count)) {
+		retval = -EFAULT;
+		goto out;
+	}
+	*f_pos += count;
+	retval = count;
+
+	/* Update size */
+	if (dev->data_size < *f_pos)
+		dev->data_size = *f_pos;
+
+out:
+	mutex_unlock(&dev->lock);
 	return 0;
 }
 
