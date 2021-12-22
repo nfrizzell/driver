@@ -52,9 +52,31 @@ int scull_trim(struct scull_dev * dev)
 	return 0;
 }
 
-struct scull_qset * scull_follow(struct scull_dev * dev, int node_idx)
+struct scull_qset * scull_follow(struct scull_dev * dev, int count)
 {
-	return NULL;
+	struct scull_qset * qset = dev->data;
+
+        /* Allocate first qset explicitly if need be */
+	if (!qset) {
+		qset = dev->data = kmalloc(sizeof(struct scull_qset), GFP_KERNEL);
+		if (qset == NULL)
+			return NULL;  /* Never mind */
+		memset(qset, 0, sizeof(struct scull_qset));
+	}
+
+	/* Then follow the list */
+	while (count--) {
+		if (!qset->next) {
+			qset->next = kmalloc(sizeof(struct scull_qset), GFP_KERNEL);
+			if (qset->next == NULL)
+				return NULL;  /* Never mind */
+			memset(qset->next, 0, sizeof(struct scull_qset));
+		}
+		qset = qset->next;
+		continue;
+	}
+
+	return qset;
 }
 
 ssize_t scull_read(struct file * filp, char __user * buf, size_t count, loff_t * f_pos)
