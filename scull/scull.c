@@ -6,6 +6,7 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/cdev.h>
+#include <linux/proc_fs.h>
 #include <asm/uaccess.h>
 
 #include "scull.h"
@@ -26,6 +27,32 @@ module_param(scull_qset_size, int, S_IRUGO);
 
 static dev_t devno;
 static struct scull_dev scdev;
+
+int scull_read_procmem(char * buf, char ** start, off_t offset, int count, int * eof, void * data)
+{
+	int i, j, len = 0;
+	int limit = count - 80; /* Don't print more than this */
+
+	struct scull_qset * qset = scdev.data;
+	if (mutex_lock_interruptible(&(scdev.lock)))
+		return -ERESTARTSYS;
+
+	len += sprintf(buf+len,"\nDevice %i: qset %i, q %i, sz %li\n", i, scdev.qset_size, scdev.quantum_size, scdev.data_size);
+
+	for (; qset && len <= limit; qset = qset->next) { /* scan the list */
+		len += sprintf(buf + len, " item at %p, qset at %p\n", qset, qset->quanta);
+		if (qset->quanta && !qset->next) /* dump only the last item */
+			for (j = 0; j < scdev.qset_size; j++) {
+				if (qset->quanta[j])
+					len += sprintf(buf + len," % 4i: %8p\n", j, qset->quanta[j]);
+			}
+
+		mutex_unlock(&(scdev.lock));
+	}
+
+	*eof = 1;
+	return len;
+}
 
 int scull_trim(struct scull_dev * dev)
 {
@@ -81,29 +108,28 @@ struct scull_qset * scull_follow(struct scull_dev * dev, int count)
 
 ssize_t scull_read(struct file * filp, char __user * buf, size_t count, loff_t * f_pos)
 {
-	struct scull_dev * dev = filp->private_data;
 	struct scull_qset * node_ptr;
 
-	int quantum_size = dev->quantum_size;
-	int qset_size = dev->qset_size;
+	int quantum_size = scdev.quantum_size;
+	int qset_size = scdev.qset_size;
 	int node_size = quantum_size * qset_size;
 	int node_idx, read_size, qset_idx, quantum_idx;
 
 	ssize_t retval = 0;
 
-	if (mutex_lock_interruptible(&dev->lock))
+	if (mutex_lock_interruptible(&(scdev.lock)))
 		return -ERESTARTSYS;
-	if (*f_pos >= dev->data_size)
+	if (*f_pos >= scdev.data_size)
 		goto out;
-	if (*f_pos + count > dev->data_size)
-		count = dev->data_size - *f_pos;
-	
+	if (*f_pos + count > scdev.data_size)
+		count = scdev.data_size - *f_pos;
+
 	node_idx = (long) *f_pos / node_size;
 	read_size = (long) *f_pos % node_size; // Remaining bytes
 	qset_idx = read_size / quantum_size;
 	quantum_idx = read_size % quantum_size;
 
-	node_ptr = scull_follow(dev, node_idx);
+	node_ptr = scull_follow(&scdev, node_idx);
 
 	if (node_ptr == NULL || !node_ptr->quanta || !node_ptr->quanta[quantum_idx])
 		goto out;
@@ -121,20 +147,20 @@ ssize_t scull_read(struct file * filp, char __user * buf, size_t count, loff_t *
 	retval = count;
 
 out:
-	mutex_unlock(&dev->lock);
+	mutex_unlock(&(scdev.lock));
 	return retval;
 }
 
 ssize_t scull_write(struct file * filp, const char __user * buf, size_t count, loff_t * f_pos)
 {
-	struct scull_dev * dev = filp->private_data;
 	struct scull_qset * node_ptr;
-	int quantum_size = dev->quantum_size, qset_size = dev->qset_size;
+
+	int quantum_size = scdev.quantum_size, qset_size = scdev.qset_size;
 	int node_size = quantum_size * qset_size;
 	int node_idx, read_size, qset_idx, quantum_idx;
 	ssize_t retval = -ENOMEM;
 
-	if (mutex_lock_interruptible(&dev->lock))
+	if (mutex_lock_interruptible(&(scdev.lock)))
 		return -ERESTARTSYS;
 
 	node_idx = (long) *f_pos / node_size;
@@ -142,7 +168,7 @@ ssize_t scull_write(struct file * filp, const char __user * buf, size_t count, l
 	qset_idx = read_size / quantum_size;
 	quantum_idx = read_size % quantum_size;
 
-	node_ptr = scull_follow(dev, node_idx);
+	node_ptr = scull_follow(&scdev, node_idx);
 	if (node_ptr == NULL)
 		goto out;
 	if (!node_ptr->quanta) {
@@ -165,16 +191,17 @@ ssize_t scull_write(struct file * filp, const char __user * buf, size_t count, l
 		retval = -EFAULT;
 		goto out;
 	}
+
 	*f_pos += count;
 	retval = count;
 
 	/* Update size */
-	if (dev->data_size < *f_pos)
-		dev->data_size = *f_pos;
+	if (scdev.data_size < *f_pos)
+		scdev.data_size = *f_pos;
 
 out:
-	mutex_unlock(&dev->lock);
-	return 0;
+	mutex_unlock(&(scdev.lock));
+	return retval;
 }
 
 int scull_open(struct inode * inode, struct file * filp)
@@ -208,45 +235,48 @@ static void scull_setup_cdev(struct scull_dev * dev, int index)
 {
 	int err, devno = MKDEV(scull_major, scull_minor + index);
 
+	dev->quantum_size = scull_quantum_size;
+	dev->qset_size = scull_qset_size;
+
+	mutex_init(&(dev->lock));
+
 	cdev_init(&(dev->cdev), &scull_fops);
 	dev->cdev.owner = THIS_MODULE;
 	dev->cdev.ops = &scull_fops;
 
 	err = cdev_add(&dev->cdev, devno, 1);
 	if (err)
-		printk(KERN_NOTICE "Error %d adding scull%d", err, index);
+		PDEBUG("Error %d adding scull%d", err, index);
 }
 
 static int __init scull_init(void)
 {
 	int result;
 
-	printk(KERN_NOTICE "scull load");
-
 	if (scull_major) {
 		devno = MKDEV(scull_major, scull_minor);
-		result = register_chrdev_region(devno, scull_nr_devs, "scull");
+		result = register_chrdev_region(devno, 1, "scull");
 	} else {
-		result = alloc_chrdev_region(&devno, scull_minor, scull_nr_devs, "scull");
+		result = alloc_chrdev_region(&devno, scull_minor, 1, "scull");
 		scull_major = MAJOR(devno);
 	}
 
 	if (result < 0) {
-		printk(KERN_WARNING "scull: can't get major %d\n", scull_major);
+		PDEBUG("scull: can't get major %d\n", scull_major);
 		return result;
 	}
 
-	scull_setup_cdev(&scdev, 0);
+		scull_setup_cdev(&scdev, 0);
 
+	PDEBUG("scull init success");
 	return 0; 
 }
 
 static void __exit scull_exit(void)
 {
-	printk(KERN_NOTICE "scull unload");
-
 	cdev_del(&(scdev.cdev));
 	unregister_chrdev_region(devno, scull_nr_devs);
+	PDEBUG("scull exit success");
 }
 
 module_init(scull_init);

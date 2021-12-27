@@ -3,6 +3,19 @@
 
 #include <linux/ioctl.h>
 
+#undef PDEBUG /* undef it, just in case */
+#ifdef SCULL_DEBUG
+#    ifdef __KERNEL__
+#        define PDEBUG(fmt, args...) printk( KERN_DEBUG "scull: " fmt, ## args)
+#    else
+#        define PDEBUG(fmt, args...) fprintf(stderr, fmt, ## args)
+#        endif
+#else
+#   define PDEBUG(fmt, args...) /* not debugging: nothing */
+#endif
+#undef PDEBUGG
+#define PDEBUGG(fmt, args...) /* nothing: it's a placeholder */
+
 #define SCULL_NR_DEVICES 1
 
 #define SCULL_MAJOR 0
