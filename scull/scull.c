@@ -36,11 +36,11 @@ The proc filesystem interface was changed in a recent kernel version, so much of
 this will be different than the book. Thanks to https://github.com/martinezjavier/ldd3 
 for providing working code to build off of.
 */
-int get_qset_size(void)
+int get_dev_size(void)
 {
 	int i = 0;
-	struct scull_qset * cur;
-	for (cur = scdev.data; cur; cur = cur->next)
+	struct scull_qset * iter;
+	for (iter = scdev.data; iter; iter = iter->next)
 		i++;
 	return i;
 }
@@ -48,7 +48,7 @@ int get_qset_size(void)
 void print_quanta(struct seq_file *s, int i, void *quanta)
 {
 	int j;
-	seq_printf(s, "    quanta #%04i: %8p", i, quanta);
+	seq_printf(s, "\n    quanta #%04i: %8p", i, quanta);
 	for (j = 0; j < scdev.quantum_size; j++) {
 		if (j % 20 == 0)
 			seq_printf(s, "\n      ");
@@ -61,64 +61,61 @@ int scull_read_procmem(struct seq_file *s, void *v)
         int i;
         int limit = s->size - 80; /* Don't print more than this */
 
-	struct scull_qset *cur = scdev.data;
+	struct scull_qset *iter = scdev.data;
 	if (mutex_lock_interruptible(&(scdev.lock)))
 		return -ERESTARTSYS;
 
-	seq_printf(s, "scull: qset_size %i, quantum_size %i, data_size %li qsets_allocated %i\n", scdev.qset_size, scdev.quantum_size, scdev.data_size, get_qset_size());
+	seq_printf(s, "scull: qset_size %i, quantum_size %i, data_size %li qsets_allocated %i\n", scdev.qset_size, scdev.quantum_size, scdev.data_size, get_dev_size());
 
-	for (; cur && s->count <= limit; cur = cur->next) { /* scan the list */
-		seq_printf(s, "  item at %p, qset at %p\n", cur, cur->quanta);
+	for (; iter && s->count <= limit; iter = iter->next) { /* scan the list */
+		seq_printf(s, "  qset at %p, quanta at %p\n", iter, iter->quanta);
 		for (i = 0; i < scdev.qset_size; i++)
-			if (cur->quanta[i])
-				print_quanta(s, i, cur->quanta[i]);
-			else
+			if (iter->quanta[i]) {
+				print_quanta(s, i, iter->quanta[i]);
+			} else {
+				seq_printf(s, "end");
 				break;
+			}
 	}
 
 	mutex_unlock(&(scdev.lock));
-	PDEBUG("scull_read_procmem");
         return 0;
 }
 
 static void *scull_seq_start(struct seq_file *s, loff_t *pos)
 {
-	PDEBUG("scull_seq_start");
 	return &scdev;
 }
 
-/* Only one device currently */
+/* Only one device iterrently */
 static void *scull_seq_next(struct seq_file *s, void *v, loff_t *pos)
 {
-	PDEBUG("scull_seq_next");
 	return NULL;
 }
 
 static void scull_seq_stop(struct seq_file *s, void *v)
 {
-	PDEBUG("scull_seq_stop");
 }
 
 static int scull_seq_show(struct seq_file *s, void *v)
 {
-	struct scull_qset *cur;
+	struct scull_qset *iter;
 	int i;
 
 	if (mutex_lock_interruptible(&(scdev.lock)))
 		return -ERESTARTSYS;
 
-	seq_printf(s, "scull: qset_size %i, quantum_size %i, data_size %li qsets_allocated %i\n", scdev.qset_size, scdev.quantum_size, scdev.data_size, get_qset_size());
+	seq_printf(s, "scull: qset_size %i, quantum_size %i, data_size %li qsets_allocated %i\n", scdev.qset_size, scdev.quantum_size, scdev.data_size, get_dev_size());
 
-	for (cur = scdev.data; cur; cur = cur->next) {
-		seq_printf(s, "  item at %p, qset at %p\n", cur, cur->quanta);
-		if (cur->quanta && !cur->next)
+	for (iter = scdev.data; iter; iter = iter->next) {
+		seq_printf(s, "  item at %p, qset at %p\n", iter, iter->quanta);
+		if (iter->quanta && !iter->next)
 			for (i = 0; i < scdev.qset_size; i++) {
-				if (cur->quanta[i])
-					seq_printf(s, "    % 4i: %8p\n", i, cur->quanta[i]);
+				if (iter->quanta[i])
+					seq_printf(s, "    % 4i: %8p\n", i, iter->quanta[i]);
 			}
 	}
 	mutex_unlock(&(scdev.lock));
-	PDEBUG("scull_seq_show");
 	return 0;
 }
 
@@ -157,14 +154,12 @@ static void scull_create_proc(void)
 {
 	proc_create_data("scullmem", 0, NULL, &scullmem_proc_ops, NULL);
 	proc_create("scullseq", 0, NULL, &scullseq_proc_ops);
-	PDEBUG("scull_create_proc");
 }
 
 static void scull_remove_proc(void)
 {
 	remove_proc_entry("scullmem", NULL);
 	remove_proc_entry("scullseq", NULL);
-	PDEBUG("scull_remove_proc");
 }
 
 #endif /* SCULL_DEBUG */
@@ -173,17 +168,17 @@ static int scull_trim(struct scull_dev *dev)
 {
 	int qset_size = dev->qset_size;
 
-	struct scull_qset *next, *cur;
+	struct scull_qset *qset, *next;
 	int i;
-	for (cur = dev->data; cur; cur = next) {
-		if (cur->quanta) {
+	for (qset = dev->data; qset; qset = next) {
+		if (qset->quanta) {
 			for (i = 0; i < qset_size; i++)
-				kfree(cur->quanta[i]);
-			kfree(cur->quanta);
-			cur->quanta = NULL;
+				kfree(qset->quanta[i]);
+			kfree(qset->quanta);
+			qset->quanta = NULL;
 		}
-		next = cur->next;
-		kfree(cur);
+		next = qset->next;
+		kfree(qset);
 	}
 
 	dev->quantum_size = scull_quantum_size;
@@ -191,7 +186,6 @@ static int scull_trim(struct scull_dev *dev)
 	dev->data_size = 0;
 	dev->data = NULL;
 
-	PDEBUG("scull_trim");
 	return 0;
 }
 
@@ -201,9 +195,10 @@ struct scull_qset *scull_follow(struct scull_dev *dev, int count)
 
         /* Allocate first qset explicitly if need be */
 	if (!qset) {
-		qset = dev->data = kmalloc(sizeof(struct scull_qset), GFP_KERNEL);
+		dev->data = kmalloc(sizeof(struct scull_qset), GFP_KERNEL);
+		qset = dev->data;
 		if (qset == NULL)
-			return NULL;  /* Never mind */
+			return NULL;
 		memset(qset, 0, sizeof(struct scull_qset));
 	}
 
@@ -212,25 +207,23 @@ struct scull_qset *scull_follow(struct scull_dev *dev, int count)
 		if (!qset->next) {
 			qset->next = kmalloc(sizeof(struct scull_qset), GFP_KERNEL);
 			if (qset->next == NULL)
-				return NULL;  /* Never mind */
+				return NULL;
 			memset(qset->next, 0, sizeof(struct scull_qset));
 		}
 		qset = qset->next;
 		continue;
 	}
-
-	PDEBUG("scull_follow");
 	return qset;
 }
 
 ssize_t scull_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
-	struct scull_qset *node_ptr;
+	struct scull_qset *iter;
 
 	int quantum_size = scdev.quantum_size;
 	int qset_size = scdev.qset_size;
 	int node_size = quantum_size *qset_size;
-	int node_idx, read_size, qset_idx, quantum_idx;
+	int node_idx, read_size, quantum_idx, quantum_off;
 
 	ssize_t retval = 0;
 
@@ -243,19 +236,19 @@ ssize_t scull_read(struct file *filp, char __user *buf, size_t count, loff_t *f_
 
 	node_idx = (long) *f_pos / node_size;
 	read_size = (long) *f_pos % node_size; // Remaining bytes
-	qset_idx = read_size / quantum_size;
-	quantum_idx = read_size % quantum_size;
+	quantum_idx = read_size / quantum_size;
+	quantum_off = read_size % quantum_size; // Where to start reading in quantum
 
-	node_ptr = scull_follow(&scdev, node_idx);
+	iter = scull_follow(&scdev, node_idx);
 
-	if (node_ptr == NULL || !node_ptr->quanta || !node_ptr->quanta[quantum_idx])
+	if (iter == NULL || !iter->quanta || !iter->quanta[quantum_off])
 		goto out;
 	
 	/* Read amount specified by the smaller of either count or quantum_size */
-	if (count > quantum_size - quantum_idx)
-		count = quantum_size - quantum_idx;
+	if (count > quantum_size - quantum_off)
+		count = quantum_size - quantum_off;
 
-	if (copy_to_user(buf, node_ptr->quanta[qset_idx] + quantum_idx, count)) {
+	if (copy_to_user(buf, iter->quanta[quantum_idx] + quantum_off, count)) {
 		retval = -EFAULT;
 		goto out;
 	}
@@ -265,47 +258,46 @@ ssize_t scull_read(struct file *filp, char __user *buf, size_t count, loff_t *f_
 
 out:
 	mutex_unlock(&(scdev.lock));
-	PDEBUG("scull_read");
 	return retval;
 }
 
 ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
-	struct scull_qset *node_ptr;
+	struct scull_qset *qset;
 
 	int quantum_size = scdev.quantum_size, qset_size = scdev.qset_size;
 	int node_size = quantum_size * qset_size;
-	int node_idx, read_size, qset_idx, quantum_idx;
+	int node_idx, read_size, quantum_idx, quantum_off;
 	ssize_t retval = -ENOMEM;
 
 	if (mutex_lock_interruptible(&(scdev.lock)))
 		return -ERESTARTSYS;
 
-	node_idx = (long) *f_pos / node_size;
-	read_size = (long) *f_pos % node_size; // Remaining bytes
-	qset_idx = read_size / quantum_size;
-	quantum_idx = read_size % quantum_size;
+	node_idx = (long)*f_pos / node_size;
+	read_size = (long)*f_pos % node_size; // Remaining bytes
+	quantum_idx = read_size / quantum_size;
+	quantum_off = read_size % quantum_size; // Where to start reading in quantum
 
-	node_ptr = scull_follow(&scdev, node_idx);
-	if (node_ptr == NULL)
+	qset = scull_follow(&scdev, node_idx);
+	if (!qset)
 		goto out;
-	if (!node_ptr->quanta) {
-		node_ptr->quanta = kmalloc(qset_size * sizeof(char*), GFP_KERNEL);
-		if (!node_ptr->quanta)
+	if (!qset->quanta) {
+		qset->quanta = kmalloc(qset_size * sizeof(char *), GFP_KERNEL);
+		if (!qset->quanta)
 			goto out;
-		memset(node_ptr->quanta, 0, qset_size * sizeof(char*));
+		memset(qset->quanta, 0, qset_size * sizeof(char *));
 	}
-	if (!node_ptr->quanta[quantum_idx]) {
-		node_ptr->quanta[quantum_idx] = kmalloc(quantum_size, GFP_KERNEL);
-		if (!node_ptr->quanta[quantum_idx])
+	if (!qset->quanta[quantum_idx]) {
+		qset->quanta[quantum_idx] = kmalloc(quantum_size, GFP_KERNEL);
+		if (!qset->quanta[quantum_idx])
 			goto out;
 	}
 
 	/* Write amount specified by the smaller of either count or quantum_size */
-	if (count > quantum_size - quantum_idx)
-		count = quantum_size - quantum_idx;
+	if (count > quantum_size - quantum_off)
+		count = quantum_size - quantum_off;
 
-	if (copy_from_user(node_ptr->quanta[quantum_idx] + qset_idx, buf, count)) {
+	if (copy_from_user(qset->quanta[quantum_idx] + quantum_off, buf, count)) {
 		retval = -EFAULT;
 		goto out;
 	}
@@ -319,14 +311,14 @@ ssize_t scull_write(struct file *filp, const char __user *buf, size_t count, lof
 
 out:
 	mutex_unlock(&(scdev.lock));
-	PDEBUG("scull_write");
 	return retval;
 }
 
 int scull_open(struct inode *inode, struct file *filp)
 {
 	struct scull_dev *dev = container_of(inode->i_cdev, struct scull_dev, cdev);
-	/* Retain the scull_dev instance for other methods */
+	/* Retain the scull_dev instance for other methods, will be more useful
+	   once multiple devices are implemented */
 	filp->private_data = dev;
 
 	/* Truncate if write only */
@@ -335,13 +327,11 @@ int scull_open(struct inode *inode, struct file *filp)
 		scull_trim(dev);
 	}
 
-	PDEBUG("scull_open");
 	return 0;
 }
 
 int scull_release(struct inode *inode, struct file *filp)
 {
-	PDEBUG("scull_release");
 	return 0;
 }
 
@@ -368,7 +358,6 @@ static void scull_setup_cdev(struct scull_dev *dev, int index)
 	err = cdev_add(&dev->cdev, devno, 1);
 	if (err)
 		PDEBUG("Error %d adding scull%d", err, index);
-	PDEBUG("scull_setup_cdev");
 }
 
 static int __init scull_init(void)
@@ -393,21 +382,18 @@ static int __init scull_init(void)
 #ifdef SCULL_DEBUG
 	scull_create_proc();
 #endif
-	
-	PDEBUG("scull init");
 	return 0; 
 }
 
 static void __exit scull_exit(void)
 {
 	cdev_del(&(scdev.cdev));
+	scull_trim(&scdev);
 	unregister_chrdev_region(devno, scull_nr_devs);
 
 #ifdef SCULL_DEBUG
 	scull_remove_proc();
 #endif
-
-	PDEBUG("scull exit");
 }
 
 module_init(scull_init);

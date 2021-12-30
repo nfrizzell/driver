@@ -21,8 +21,8 @@
 #define SCULL_MAJOR 0
 #define SCULL_MINOR 0
 
-#define SCULL_QUANTUM_SIZE 1000;
-#define SCULL_QSET_SIZE 4000;
+#define SCULL_QUANTUM_SIZE 4000;
+#define SCULL_QSET_SIZE 1000;
 
 struct scull_qset {
 	struct scull_qset * next;
