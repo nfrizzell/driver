@@ -335,6 +335,78 @@ int scull_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+int scull_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	int retval = 0, tmp;
+	switch(cmd) {
+		case SCULL_IOCTL_RESET:
+			scull_quantum_size = SCULL_QUANTUM_SIZE;
+			scull_qset_size = SCULL_QSET_SIZE;
+			break;
+		case SCULL_IOCTL_SET_PTR_QUANTUM:
+			if (!capable(CAP_SYS_ADMIN))
+				return -EPERM;
+			retval = __get_user(scull_quantum_size, (int __user *)arg);
+			break;
+		case SCULL_IOCTL_SET_PTR_QSET:
+			if (!capable(CAP_SYS_ADMIN))
+				return -EPERM;
+			retval = __get_user(scull_qset_size, (int __user *)arg);
+			break;
+		case SCULL_IOCTL_SET_QUANTUM:
+			if (!capable(CAP_SYS_ADMIN))
+				return -EPERM;
+			scull_quantum_size = arg;
+			break;
+		case SCULL_IOCTL_SET_QSET:
+			if (!capable(CAP_SYS_ADMIN))
+				return -EPERM;
+			scull_qset_size = arg;
+			break;
+		case SCULL_IOCTL_GET_PTR_QUANTUM:
+			retval = __put_user(scull_quantum_size, (int __user *)arg);
+			break;
+		case SCULL_IOCTL_GET_PTR_QSET:
+			retval = __put_user(scull_qset_size, (int __user *)arg);
+			break;
+		case SCULL_IOCTL_GET_QUANTUM:
+			return scull_quantum_size;
+		case SCULL_IOCTL_GET_QSET:
+			return scull_qset_size;
+		case SCULL_IOCTL_SWAP_PTR_QUANTUM:
+			if (!capable(CAP_SYS_ADMIN))
+				return -EPERM;
+			tmp = scull_quantum_size;
+			retval = __get_user(scull_quantum_size, (int __user *)arg);
+			if (retval == 0)
+				retval = __put_user(tmp, (int __user *)arg);
+			break;
+		case SCULL_IOCTL_SWAP_PTR_QSET:
+			if (!capable(CAP_SYS_ADMIN))
+				return -EPERM;
+			tmp = scull_qset_size;
+			retval = __get_user(scull_qset_size, (int __user *)arg);
+			if (retval == 0)
+				retval = __put_user(tmp, (int __user *)arg);
+			break;
+		case SCULL_IOCTL_SWAP_QUANTUM:
+			if (!capable(CAP_SYS_ADMIN))
+				return -EPERM;
+			tmp = scull_quantum_size;
+			scull_quantum_size = arg;
+			return tmp;
+		case SCULL_IOCTL_SWAP_QSET:
+			if (!capable(CAP_SYS_ADMIN))
+				return -EPERM;
+			tmp = scull_qset_size;
+			scull_qset_size = arg;
+			return tmp;
+		default:
+			return -ENOTTY;
+	}
+	return retval;
+}
+
 static struct file_operations scull_fops = {
 	.owner =	THIS_MODULE,
 	.read =		scull_read,
